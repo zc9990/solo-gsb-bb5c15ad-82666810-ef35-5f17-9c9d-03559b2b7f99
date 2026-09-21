@@ -107,6 +107,10 @@
             <input id="qcOffsetY" type="number" step="0.05" value="0">
           </label>
           <label class="field">
+            <span>校准旋转角 (°，逆时针为正)</span>
+            <input id="qcRotation" type="number" step="0.1" value="0">
+          </label>
+          <label class="field">
             <span>合格公差 (mm)</span>
             <input id="qcTolerance" type="number" min="0" step="0.05" value="0.5">
           </label>
@@ -126,9 +130,17 @@
               <span>Y 最大校准量 (mm)</span>
               <input id="qcMaxOffsetY" type="number" min="0" step="0.1" value="2">
             </label>
+            <label class="field">
+              <span>最大旋转角 (°，0=不搜角度)</span>
+              <input id="qcMaxAngle" type="number" min="0" max="15" step="0.1" value="0">
+            </label>
+            <label class="field">
+              <span>角度步长 (°)</span>
+              <input id="qcAngleStep" type="number" min="0" step="0.05" value="0.1">
+            </label>
           </div>
-          <button id="qcAutoCalibrate" type="button" class="btn-secondary">一键估算全局平移</button>
-          <p class="hint">枚举「设计点－实测点」候选平移，仅保留两轴均未超限者，按匹配数最多、总残差最小、|dx|+|dy| 最小决胜；自动写回偏移并重跑（不使用质心差）。</p>
+          <button id="qcAutoCalibrate" type="button" class="btn-secondary">一键自动校准（平移 / 小角度刚体）</button>
+          <p class="hint">在 [-最大旋转角, 最大旋转角] 内按步长枚举角度（含 0°），实测点先围绕板材中心旋转，再在 X/Y 限幅内枚举候选平移；每个「角度 × 平移」候选复用一对一匹配，按匹配数最多、总残差最小、旋转绝对值最小、|dx|+|dy| 最小决胜。最大旋转角留 0 时仅估平移（与旧版一致）。成功后自动写回角度与偏移并重跑；无有效候选时保留原参数（不使用质心差）。</p>
           <div id="qcCalibMsg" class="calib-msg" role="status" hidden></div>
         </div>
 
@@ -152,7 +164,7 @@
       <section class="panel preview-panel" aria-label="质检叠加预览">
         <div class="preview-head">
           <h2>质检叠加图</h2>
-          <span class="braille-line" title="图例">○ 设计点　◆ 偏移后实测点</span>
+          <span class="braille-line" title="图例">○ 设计点　◆ 刚体校准（旋转+平移）后实测点</span>
         </div>
         <div id="qcPreview" class="preview">
           <p class="placeholder">先在「排版」模式完成一次成功排版，再粘贴实测 CSV 后点击「开始质检」</p>
@@ -162,7 +174,7 @@
   </main>
 
   <footer>
-    <p>转换规则：大写字母前加大写前缀 ⠠；连续数字段仅在段首加一个数字前缀 ⠼；按盲文单元整词换行，放不下时给出原因，绝不裁切。质检比较时先应用校准偏移，再在关联半径内做一对一最优匹配。</p>
+    <p>转换规则：大写字母前加大写前缀 ⠠；连续数字段仅在段首加一个数字前缀 ⠼；按盲文单元整词换行，放不下时给出原因，绝不裁切。质检比较时实测点先围绕板材中心做小角度刚体旋转、再应用校准偏移，然后在关联半径内做一对一最优匹配。</p>
   </footer>
 
   <script src="../lib/braille.js"></script>

@@ -33,7 +33,7 @@ app.post('/api/layout', (req, res) => {
   res.json(result);
 });
 
-// 压印质检接口：以成功排版的设计点为基准，对实测凸点 CSV 做偏移/匹配/判定
+// 压印质检接口：以成功排版的设计点为基准，对实测凸点 CSV 做小角度刚体校准/偏移/匹配/判定
 app.post('/api/qc', (req, res) => {
   const body = req.body || {};
   const result = QC.inspect({
@@ -41,6 +41,7 @@ app.post('/api/qc', (req, res) => {
     csv: body.csv,
     offsetX: body.offsetX,
     offsetY: body.offsetY,
+    rotation: body.rotation,
     tolerance: body.tolerance,
     maxRadius: body.maxRadius,
     plateWidth: body.plateWidth,
@@ -49,7 +50,9 @@ app.post('/api/qc', (req, res) => {
   res.json(result);
 });
 
-// 自动校准：粘贴无序实测点 + X/Y 最大校准量，一键估算全局平移
+// 自动校准：粘贴无序实测点 + X/Y 最大校准量，一键估算全局平移；
+// 另可选传 maxAngle/angleStep（度）启用小角度刚体校准（角度 × 平移联合搜索）。
+// 不传角度参数时完全兼容旧的纯平移调用。
 app.post('/api/qc/calibrate', (req, res) => {
   const body = req.body || {};
   const result = QC.estimateCalibration({
@@ -57,7 +60,11 @@ app.post('/api/qc/calibrate', (req, res) => {
     csv: body.csv,
     maxOffsetX: body.maxOffsetX,
     maxOffsetY: body.maxOffsetY,
-    maxRadius: body.maxRadius
+    maxRadius: body.maxRadius,
+    maxAngle: body.maxAngle,
+    angleStep: body.angleStep,
+    plateWidth: body.plateWidth,
+    plateHeight: body.plateHeight
   });
   res.json(result);
 });

@@ -103,11 +103,11 @@ test('偏移先应用再比较；合格/超差/缺失/多余四类齐全', () =>
   assert.ok(Math.abs(r.stats.meanDeviation - 0.3) < 1e-9);
 });
 
-test('报告 CSV 含双方坐标、距离与中文结论', () => {
+test('报告 CSV 含双方坐标、距离、角度与中文结论', () => {
   const design = [{ x: 5, y: 5, r: 0.75 }];
   const r = QC.inspect({ design, csv: '5.2,4.9', tolerance: 0.5, maxRadius: 2 });
-  assert.match(r.csv, /design_index,design_x_mm,design_y_mm,csv_row,measured_x_mm,measured_y_mm,corrected_x_mm,corrected_y_mm,distance_mm,conclusion/);
-  assert.match(r.csv, /1,5,5,1,5.2,4.9,5.2,4.9,0\.2236,合格/);
+  assert.match(r.csv, /design_index,design_x_mm,design_y_mm,csv_row,measured_x_mm,measured_y_mm,corrected_x_mm,corrected_y_mm,distance_mm,conclusion,rotation_deg/);
+  assert.match(r.csv, /1,5,5,1,5\.2,4\.9,5\.2,4\.9,0\.2236,合格,0/);
   assert.match(r.csv, /pass_rate_percent/);
 });
 
@@ -285,4 +285,240 @@ test('自动校准：参数非法、CSV 错误或缺点时 ok=false 且保留错
   assert.ok(csvErr.errors.some(e => e.line === 2));
   assert.equal(QC.estimateCalibration({ design, csv: '', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 2 }).ok, false);
   assert.equal(QC.estimateCalibration({ design: [], csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 2 }).ok, false);
+});
+
+/* ---------- 小角度刚体校准 ---------- */
+
+// 围绕中心旋转点（与 lib/qc.js 同一约定：逆时针为正）
+function rotate(x, y, cx, cy, deg) {
+  const a = deg * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  const rx = x - cx, ry = y - cy;
+  return [cx + c * rx - s * ry, cy + s * rx + c * ry];
+}
+
+const RIGID_DESIGN = [
+  { x: 20, y: 15 }, { x: 80, y: 15 }, { x: 50, y: 25 },
+  { x: 20, y: 38 }, { x: 80, y: 38 }
+];
+const PLATE = { plateWidth: 100, plateHeight: 50 };
+
+function csvOf(points) {
+  return points.map(p => p[0].toFixed(6) + ',' + p[1].toFixed(6)).join('\n');
+}
+
+test('刚体校准：纯旋转实测可估中旋转角（角度取反），旋转中心为板材中心', () => {
+  // 实测 = 设计围绕 (50,25) 旋转 +1.2°；校准角应为 -1.2°、偏移为 0
+  const measured = RIGID_DESIGN.map(d => rotate(d.x, d.y, 50, 25, 1.2));
+  const r = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv: csvOf(measured),
+    maxOffsetX: 2, maxOffsetY: 2, maxRadius: 0.5,
+    maxAngle: 3, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.rigidMode, true);
+  assert.ok(Math.abs(r.rotation - -1.2) < 1e-9, 'rotation=' + r.rotation);
+  assert.ok(Math.abs(r.offsetX) < 1e-9, 'dx=' + r.offsetX);
+  assert.ok(Math.abs(r.offsetY) < 1e-9, 'dy=' + r.offsetY);
+  assert.equal(r.matchedCount, 5);
+  assert.ok(Math.abs(r.totalResidual) < 1e-9);
+  assert.equal(r.centerX, 50);
+  assert.equal(r.centerY, 25);
+  assert.equal(r.angleCount, 61); // -3.0..3.0 步长 0.1
+});
+
+test('刚体校准：旋转 + 平移联合偏差可同时估中角度与 dx/dy', () => {
+  // 实测 = 旋转(+1.7°) 后再整体 (+0.4,-0.3)
+  const measured = RIGID_DESIGN.map(d => {
+    const p = rotate(d.x, d.y, 50, 25, 1.7);
+    return [p[0] + 0.4, p[1] - 0.3];
+  });
+  const r = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv: csvOf(measured),
+    maxOffsetX: 2, maxOffsetY: 2, maxRadius: 0.3,
+    maxAngle: 3, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(r.ok, true);
+  assert.ok(Math.abs(r.rotation - -1.7) < 1e-9, 'rotation=' + r.rotation);
+  assert.ok(Math.abs(r.offsetX - -0.4) < 0.02, 'dx=' + r.offsetX);
+  assert.ok(Math.abs(r.offsetY - 0.3) < 0.02, 'dy=' + r.offsetY);
+  assert.equal(r.matchedCount, 5);
+});
+
+test('刚体校准：写回角度与偏移后重跑 inspect，四类判定全部合格', () => {
+  const measured = RIGID_DESIGN.map(d => {
+    const p = rotate(d.x, d.y, 50, 25, 0.9);
+    return [p[0] - 0.25, p[1] + 0.15];
+  });
+  const csv = csvOf(measured);
+  const est = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv,
+    maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.3,
+    maxAngle: 2, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(est.ok, true);
+  assert.ok(Math.abs(est.rotation - -0.9) < 1e-9, 'rotation=' + est.rotation);
+  const q = QC.inspect({
+    design: RIGID_DESIGN, csv,
+    offsetX: est.offsetX, offsetY: est.offsetY, rotation: est.rotation,
+    tolerance: 0.05, maxRadius: 0.3, ...PLATE
+  });
+  assert.equal(q.ok, true);
+  assert.equal(q.stats.passCount, 5);
+  assert.equal(q.stats.matchedCount, 5);
+  assert.equal(q.stats.missingCount, 0);
+  assert.equal(q.stats.extraCount, 0);
+  assert.equal(q.params.rotation, est.rotation);
+});
+
+test('刚体校准：pairs 同时记录原始坐标、校正坐标与角度，CSV 参数行含旋转角/中心', () => {
+  const measured = RIGID_DESIGN.map(d => rotate(d.x, d.y, 50, 25, 0.5));
+  const q = QC.inspect({
+    design: RIGID_DESIGN, csv: csvOf(measured),
+    rotation: -0.5, tolerance: 0.01, maxRadius: 0.1, ...PLATE
+  });
+  assert.equal(q.pairs.length, 5);
+  const p0 = q.pairs[0];
+  // 原始坐标为未旋转实测（输出按 4 位小数），校正坐标贴近设计点
+  assert.ok(Math.abs(p0.measuredX - measured[0][0]) < 1e-4);
+  assert.ok(Math.abs(p0.measuredY - measured[0][1]) < 1e-4);
+  assert.ok(Math.abs(p0.correctedX - p0.designX) < 1e-6);
+  assert.ok(Math.abs(p0.correctedY - p0.designY) < 1e-6);
+  assert.match(q.csv, /rotation_deg/);
+  assert.match(q.csv, /,-0\.5$/m); // 明细末列角度
+  assert.match(q.csv, /# params,offset_x_mm,offset_y_mm,rotation_deg,rotation_center_x_mm,rotation_center_y_mm/);
+  assert.match(q.svg, /data-rotation="-0.5"/);
+  assert.match(q.svg, /data-center-x="50"/);
+});
+
+test('刚体校准：叠加 SVG 的校正点带原始测量坐标与角度数据', () => {
+  const measured = RIGID_DESIGN.map(d => rotate(d.x, d.y, 50, 25, 0.5));
+  const q = QC.inspect({
+    design: RIGID_DESIGN, csv: csvOf(measured),
+    rotation: -0.5, tolerance: 0.01, maxRadius: 0.1, ...PLATE
+  });
+  assert.match(q.svg, new RegExp('data-measured-x="' + q.pairs[0].measuredX + '"'));
+  assert.match(q.svg, /旋转 -0.5°/);
+});
+
+test('刚体校准：优先级③匹配数与残差相同时偏好旋转绝对值最小（0°）', () => {
+  // 实测与设计完全一致；大半径下多个角度都能配满、残差近似为 0，应选角度 0
+  const csv = RIGID_DESIGN.map(d => d.x + ',' + d.y).join('\n');
+  const r = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv,
+    maxOffsetX: 1, maxOffsetY: 1, maxRadius: 5,
+    maxAngle: 2, angleStep: 0.5, ...PLATE
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.rotation, 0);
+  assert.equal(r.offsetX, 0);
+  assert.equal(r.offsetY, 0);
+});
+
+test('刚体校准：旋转使真实解落在纯平移限幅之外时，仅平移估不准、刚体可以', () => {
+  // 角点 (20,15) 旋转 2° 后位移约 1.2mm，超过 0.3mm 的平移限幅
+  const measured = RIGID_DESIGN.map(d => rotate(d.x, d.y, 50, 25, 2));
+  const csv = csvOf(measured);
+  const plain = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv,
+    maxOffsetX: 0.3, maxOffsetY: 0.3, maxRadius: 0.2, ...PLATE
+  });
+  // 中心点 (50,25) 旋转不动：纯平移至少能配 1 对，但配不满 5 对
+  if (plain.ok) assert.ok(plain.matchedCount < 5);
+  const rigid = QC.estimateCalibration({
+    design: RIGID_DESIGN, csv,
+    maxOffsetX: 0.3, maxOffsetY: 0.3, maxRadius: 0.2,
+    maxAngle: 3, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(rigid.ok, true);
+  assert.ok(Math.abs(rigid.rotation - -2) < 1e-9, 'rotation=' + rigid.rotation);
+  assert.equal(rigid.matchedCount, 5);
+});
+
+test('刚体校准：缺失设计点与多余实测点不影响角度估计（不使用质心差）', () => {
+  const design = RIGID_DESIGN.concat([{ x: 50, y: 8 }]);
+  const measured = RIGID_DESIGN.map(d => rotate(d.x, d.y, 50, 25, 0.8));
+  measured.push([96, 47]); // 多余点；最后一个设计点缺失
+  const r = QC.estimateCalibration({
+    design, csv: csvOf(measured),
+    maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.2,
+    maxAngle: 2, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(r.ok, true);
+  assert.ok(Math.abs(r.rotation - -0.8) < 1e-9);
+  assert.equal(r.matchedCount, 5);
+});
+
+test('刚体校准：角度与平移范围内无有效候选时 ok=false 并保留原参数语义', () => {
+  const design = [{ x: 20, y: 15 }, { x: 80, y: 15 }, { x: 20, y: 38 }];
+  const measured = design.map(d => rotate(d.x, d.y, 50, 25, 2.5));
+  const r = QC.estimateCalibration({
+    design, csv: csvOf(measured),
+    maxOffsetX: 0.2, maxOffsetY: 0.2, maxRadius: 0.1,
+    maxAngle: 0.5, angleStep: 0.1, ...PLATE
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.rotation, null);
+  assert.equal(r.offsetX, null);
+  assert.equal(r.offsetY, null);
+  assert.match(r.errors[0].message, /没有任何可评估候选/);
+});
+
+test('刚体校准：角度参数非法或超范围时 ok=false', () => {
+  const design = [{ x: 20, y: 15 }];
+  const csv = '20,15';
+  assert.equal(QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxAngle: -1, angleStep: 0.1
+  }).ok, false);
+  assert.equal(QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxAngle: 2, angleStep: 0
+  }).ok, false);
+  // 只传最大角不传步长：明确报错而非静默退化为纯平移
+  const onlyAngle = QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxAngle: -0.5
+  });
+  assert.equal(onlyAngle.ok, false);
+  assert.match(onlyAngle.errors[0].message, /最大旋转角/);
+  const missingStep = QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxAngle: 2
+  });
+  assert.equal(missingStep.ok, false);
+  assert.match(missingStep.errors[0].message, /角度步长/);
+  // 超过小角度上限 15°
+  assert.match(QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxAngle: 20, angleStep: 0.1
+  }).errors[0].message, /超出小角度/);
+});
+
+test('刚体校准：不传角度参数时与旧纯平移调用完全兼容', () => {
+  const design = [{ x: 5, y: 5 }, { x: 11, y: 5 }, { x: 11, y: 7.5 }];
+  const csv = '11.4,5.25\n5.4,5.25\n11.4,7.75';
+  const r = QC.estimateCalibration({ design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.2 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rigidMode, false);
+  assert.equal(r.rotation, 0);
+  assert.equal(r.angleCount, null);
+  assert.ok(Math.abs(r.offsetX - -0.4) < 1e-9);
+  assert.ok(Math.abs(r.offsetY - -0.25) < 1e-9);
+});
+
+test('刚体校准：无板材幅面时旋转中心退化为设计点包围盒中心', () => {
+  const design = [{ x: 20, y: 10 }, { x: 80, y: 40 }];
+  const measured = design.map(d => rotate(d.x, d.y, 50, 25, 1.0));
+  const r = QC.estimateCalibration({
+    design, csv: csvOf(measured),
+    maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.2,
+    maxAngle: 2, angleStep: 0.1
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.centerX, 50);
+  assert.equal(r.centerY, 25);
+  assert.ok(Math.abs(r.rotation - -1) < 1e-9);
+  assert.equal(r.matchedCount, 2);
+});
+
+test('inspect 不传 rotation 时行为与旧版一致（旋转 0）', () => {
+  const design = [{ x: 5, y: 5, r: 0.75 }];
+  const r = QC.inspect({ design, csv: '5.2,4.9', tolerance: 0.5, maxRadius: 2 });
+  assert.equal(r.params.rotation, 0);
+  assert.ok(Math.abs(r.pairs[0].distance - 0.2236) < 1e-3);
 });

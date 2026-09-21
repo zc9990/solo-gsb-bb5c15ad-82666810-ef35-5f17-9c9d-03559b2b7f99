@@ -167,6 +167,7 @@
   var qcCsv = document.getElementById('qcCsv');
   var qcOffsetX = document.getElementById('qcOffsetX');
   var qcOffsetY = document.getElementById('qcOffsetY');
+  var qcRotation = document.getElementById('qcRotation');
   var qcTolerance = document.getElementById('qcTolerance');
   var qcMaxRadius = document.getElementById('qcMaxRadius');
   var qcRun = document.getElementById('qcRun');
@@ -177,6 +178,8 @@
   var qcBaseline = document.getElementById('qcBaseline');
   var qcMaxOffsetX = document.getElementById('qcMaxOffsetX');
   var qcMaxOffsetY = document.getElementById('qcMaxOffsetY');
+  var qcMaxAngle = document.getElementById('qcMaxAngle');
+  var qcAngleStep = document.getElementById('qcAngleStep');
   var qcAutoCalibrate = document.getElementById('qcAutoCalibrate');
   var qcCalibMsg = document.getElementById('qcCalibMsg');
   var btnQcCsv = document.getElementById('qcDownloadCsv');
@@ -230,7 +233,7 @@
       '最大偏差 <b>' + (s.maxDeviation == null ? '—' : s.maxDeviation) + '</b> mm；' +
       '平均偏差 <b>' + (s.meanDeviation == null ? '—' : s.meanDeviation) + '</b> mm' +
       '（公差 ' + r.params.tolerance + ' mm，关联半径 ' + r.params.maxRadius +
-      ' mm，偏移 ' + r.params.offsetX + ' / ' + r.params.offsetY + ' mm）';
+      ' mm，旋转 ' + r.params.rotation + '°，偏移 ' + r.params.offsetX + ' / ' + r.params.offsetY + ' mm）';
     qcStats.hidden = false;
     qcLegend.hidden = false;
   }
@@ -267,6 +270,7 @@
       csv: qcCsv.value,
       offsetX: numVal(qcOffsetX),
       offsetY: numVal(qcOffsetY),
+      rotation: numVal(qcRotation),
       tolerance: numVal(qcTolerance),
       maxRadius: numVal(qcMaxRadius)
     };
@@ -293,7 +297,7 @@
 
   qcRun.addEventListener('click', runQc);
 
-  /* ---------- 自动校准：一键估算全局平移并写回偏移输入框 ---------- */
+  /* ---------- 自动校准：一键估算平移（可选小角度刚体）并写回输入框 ---------- */
 
   function showCalibMsg(kind, text) {
     qcCalibMsg.className = 'calib-msg ' + kind;
@@ -306,17 +310,22 @@
       // 写回估算值（程序化赋值，不会触发 input 事件），再立即重跑四类判定
       qcOffsetX.value = r.offsetX;
       qcOffsetY.value = r.offsetY;
-      showCalibMsg(
-        'ok',
-        '估算全局平移：X = ' + r.offsetX + ' mm，Y = ' + r.offsetY +
-        ' mm（候选 ' + r.candidateCount + ' 个，匹配 ' + r.matchedCount +
-        ' 对，总残差 ' + r.totalResidual + ' mm）；偏移已写回并自动重跑质检。'
-      );
+      if (r.rigidMode) qcRotation.value = r.rotation;
+      var detail = r.rigidMode
+        ? '估算小角度刚体：旋转 = ' + r.rotation + '°（围绕板材中心 ' + r.centerX + ', ' +
+          r.centerY + ' mm），X = ' + r.offsetX + ' mm，Y = ' + r.offsetY +
+          ' mm（角度 ' + r.angleCount + ' 个、角度×平移候选 ' + r.candidateCount +
+          ' 个，匹配 ' + r.matchedCount + ' 对，总残差 ' + r.totalResidual +
+          ' mm）；角度与偏移已写回并自动重跑质检。'
+        : '估算全局平移：X = ' + r.offsetX + ' mm，Y = ' + r.offsetY +
+          ' mm（候选 ' + r.candidateCount + ' 个，匹配 ' + r.matchedCount +
+          ' 对，总残差 ' + r.totalResidual + ' mm）；偏移已写回并自动重跑质检。';
+      showCalibMsg('ok', detail);
       runQc();
     } else {
-      // 无可用候选 / 参数非法：保留偏移输入框原值，仅给出明确提示
+      // 无可用候选 / 参数非法：保留角度与偏移输入框原值，仅给出明确提示
       var msg = (r.errors && r.errors[0] && r.errors[0].message) || '自动校准失败。';
-      showCalibMsg('warn', '未能估算全局平移，偏移输入保持原值：' + msg);
+      showCalibMsg('warn', '未能估算校准参数，角度与偏移输入保持原值：' + msg);
     }
   }
 
@@ -328,11 +337,21 @@
     }
     var payload = {
       design: lastBaseline.dots,
+      plateWidth: lastBaseline.params.plateWidth,
+      plateHeight: lastBaseline.params.plateHeight,
       csv: qcCsv.value,
       maxOffsetX: numVal(qcMaxOffsetX),
       maxOffsetY: numVal(qcMaxOffsetY),
       maxRadius: numVal(qcMaxRadius)
     };
+    // 最大旋转角填正数时启用「角度 × 平移」联合搜索；留空/0 时不传角度参数，
+    // 走与旧版完全一致的纯平移估算（API 亦兼容不传角度的调用）
+    var maxAngle = numVal(qcMaxAngle);
+    var angleStep = numVal(qcAngleStep);
+    if (maxAngle != null && maxAngle > 0) {
+      payload.maxAngle = maxAngle;
+      payload.angleStep = angleStep;
+    }
     qcAutoCalibrate.disabled = true;
     fetch('/api/qc/calibrate', {
       method: 'POST',
@@ -360,7 +379,8 @@
 
   // 参数或 CSV 修改后防抖自动重跑（已有质检结果时），手动按钮始终可用；
   // 输入一旦被改动，清掉上一次自动校准的提示
-  [qcCsv, qcOffsetX, qcOffsetY, qcTolerance, qcMaxRadius, qcMaxOffsetX, qcMaxOffsetY].forEach(function (el) {
+  [qcCsv, qcOffsetX, qcOffsetY, qcRotation, qcTolerance, qcMaxRadius,
+   qcMaxOffsetX, qcMaxOffsetY, qcMaxAngle, qcAngleStep].forEach(function (el) {
     el.addEventListener('input', function () {
       if (!qcCalibMsg.hidden) qcCalibMsg.hidden = true;
       if (!lastQc) return;
