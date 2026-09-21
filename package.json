@@ -1,0 +1,16 @@
+{
+  "name": "braille-label-studio",
+  "version": "1.0.0",
+  "description": "盲文标签排版台：英文标签 → 六点一级盲文转换、整词换行排版、毫米坐标凸点 SVG 预览与下载",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
