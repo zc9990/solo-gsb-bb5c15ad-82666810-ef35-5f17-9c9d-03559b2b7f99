@@ -286,3 +286,190 @@ test('自动校准：参数非法、CSV 错误或缺点时 ok=false 且保留错
   assert.equal(QC.estimateCalibration({ design, csv: '', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 2 }).ok, false);
   assert.equal(QC.estimateCalibration({ design: [], csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 2 }).ok, false);
 });
+
+/* ---------- 小角度刚体校准（旋转 + 平移联合搜索） ---------- */
+
+// 测试辅助：点绕中心旋转（与库内变换方向一致）
+function rotateXY(x, y, cx, cy, deg) {
+  const t = deg * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  const rx = x - cx, ry = y - cy;
+  return [cx + rx * c - ry * s, cy + rx * s + ry * c];
+}
+
+test('刚体校准：仅小角度旋转（无平移）也能估中角度', () => {
+  // 板材 100×50，设计点远离中心 (50,25)，1.5° 旋转产生的位移才可被分辨
+  const design = [{ x: 10, y: 10 }, { x: 90, y: 10 }, { x: 90, y: 40 }, { x: 10, y: 40 }];
+  const csv = design.map(d => {
+    const [x, y] = rotateXY(d.x, d.y, 50, 25, 1.5); // 实测相对设计多转了 +1.5°
+    return x + ',' + y;
+  }).join('\n');
+  const r = QC.estimateCalibration({
+    design, csv, maxOffsetX: 0.5, maxOffsetY: 0.5, maxRadius: 0.05,
+    maxRotation: 2, angleStep: 0.5, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.rotationDeg, -1.5); // 校准角反向抵消
+  assert.equal(r.angleCount, 9);    // 0, ±0.5, ±1, ±1.5, ±2 共 9 个
+  assert.equal(r.matchedCount, 4);
+  assert.equal(r.centerX, 50);
+  assert.equal(r.centerY, 25);
+});
+
+test('刚体校准：旋转 + 平移联合恢复，写回 inspect 后四类重跑全部合格', () => {
+  const design = [{ x: 10, y: 10 }, { x: 90, y: 10 }, { x: 90, y: 40 }, { x: 10, y: 40 }];
+  // 实测：先绕中心 +1.5°，再整体 (+0.12,-0.08)
+  const csv = design.map(d => {
+    const [x, y] = rotateXY(d.x, d.y, 50, 25, 1.5);
+    return (x + 0.12) + ',' + (y - 0.08);
+  }).join('\n');
+  const est = QC.estimateCalibration({
+    design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.3,
+    maxRotation: 2, angleStep: 0.5, plateWidth: 100, plateHeight: 50
+  });
+  // 实测生成方式为“旋转后平移 (+0.12,-0.08)”，故测量坐标系下的逆平移为
+  // R(-1.5°)·(-0.12,+0.08) ≈ (-0.1179,+0.0829)
+  assert.equal(est.ok, true);
+  assert.ok(Math.abs(est.rotationDeg - -1.5) < 1e-9, 'angle=' + est.rotationDeg);
+  assert.ok(Math.abs(est.offsetX - -0.1179) < 1e-3, 'dx=' + est.offsetX);
+  assert.ok(Math.abs(est.offsetY - 0.0829) < 1e-3, 'dy=' + est.offsetY);
+
+  const q = QC.inspect({
+    design, csv,
+    offsetX: est.offsetX, offsetY: est.offsetY, rotationDeg: est.rotationDeg,
+    centerX: est.centerX, centerY: est.centerY,
+    tolerance: 0.02, maxRadius: 0.05, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(q.ok, true);
+  assert.equal(q.stats.matchedCount, 4);
+  assert.equal(q.stats.passCount, 4);
+  assert.equal(q.stats.missingCount, 0);
+  assert.equal(q.stats.extraCount, 0);
+  assert.equal(q.params.rotationDeg, -1.5);
+});
+
+test('刚体校准：优先级③同匹配数同残差时 |旋转角| 最小（0° 优先）', () => {
+  // 实测与设计完全重合：0° 与 ±0.5° 在半径 2 内都能 1 对、残差几乎相同，
+  // 0° 角更小应胜出（且 +0.5/-0.5 之间再靠固定数值顺序打破）
+  const design = [{ x: 50, y: 25 }];
+  const r = QC.estimateCalibration({
+    design, csv: '50,25', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 2,
+    maxRotation: 1, angleStep: 0.5, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.rotationDeg, 0);
+  assert.equal(r.offsetX, 0);
+  assert.equal(r.offsetY, 0);
+});
+
+test('刚体校准：角度步长缺省 0.1°，网格必含 0° 与 ±maxRotation', () => {
+  const design = [{ x: 10, y: 10 }];
+  const r = QC.estimateCalibration({
+    design, csv: '10,10', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.5,
+    maxRotation: 0.5, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.angleCount, 11); // 0, ±0.1…±0.5
+});
+
+test('刚体校准：兼容未传角度的调用——纯平移行为与旧版一致', () => {
+  const design = [{ x: 5, y: 5 }, { x: 11, y: 5 }];
+  const csv = '5.35,4.8\n11.35,4.8';
+  const r = QC.estimateCalibration({ design, csv, maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.3 });
+  assert.equal(r.ok, true);
+  assert.equal(r.angleCount, 1);
+  assert.equal(r.rotationDeg, 0); // 未传角度：角度固定 0
+  assert.ok(Math.abs(r.offsetX - -0.35) < 1e-9);
+  assert.equal(r.matchedCount, 2);
+});
+
+test('刚体校准：maxRotation=0 合法，只评估 0°；非法角度参数报错', () => {
+  const design = [{ x: 5, y: 5 }];
+  const ok0 = QC.estimateCalibration({
+    design, csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1,
+    maxRotation: 0, angleStep: 0.1, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(ok0.ok, true);
+  assert.equal(ok0.angleCount, 1);
+  assert.equal(ok0.rotationDeg, 0);
+
+  assert.equal(QC.estimateCalibration({
+    design, csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1, maxRotation: 11
+  }).ok, false); // 超过 10° 上限
+  assert.equal(QC.estimateCalibration({
+    design, csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1,
+    maxRotation: 2, angleStep: 0
+  }).ok, false); // 步长非正
+  assert.equal(QC.estimateCalibration({
+    design, csv: '5,5', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 1,
+    maxRotation: 0.5, angleStep: 1
+  }).ok, false); // 步长大于最大角
+});
+
+test('刚体校准：所有角度下限幅内均无候选时 ok=false 并说明原因、保留空结果', () => {
+  const design = [{ x: 50, y: 25 }];
+  const r = QC.estimateCalibration({
+    design, csv: '60,25', maxOffsetX: 1, maxOffsetY: 1, maxRadius: 0.5,
+    maxRotation: 1, angleStep: 0.5, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.offsetX, null);
+  assert.equal(r.offsetY, null);
+  assert.equal(r.rotationDeg, null);
+  assert.match(r.errors[0].message, /搜索角度/);
+});
+
+test('刚体校准：无板材尺寸时旋转中心退化为设计点包围盒中心', () => {
+  const design = [{ x: 0, y: 0 }, { x: 20, y: 10 }]; // 包围盒中心 (10,5)
+  const csv = design.map(d => {
+    const [x, y] = rotateXY(d.x, d.y, 10, 5, 1);
+    return x + ',' + y;
+  }).join('\n');
+  const r = QC.estimateCalibration({
+    design, csv, maxOffsetX: 0.2, maxOffsetY: 0.2, maxRadius: 0.02,
+    maxRotation: 1, angleStep: 0.5
+  });
+  assert.equal(r.ok, true);
+  assert.equal(r.centerX, 10);
+  assert.equal(r.centerY, 5);
+  assert.equal(r.rotationDeg, -1);
+});
+
+/* ---------- 刚体校准写回后的叠加图与 CSV 记录 ---------- */
+
+test('inspect 应用旋转后：CSV 记录原始/校正坐标与角度，SVG 根节点带角度与中心', () => {
+  const design = [{ x: 10, y: 10 }, { x: 90, y: 10 }, { x: 90, y: 40 }, { x: 10, y: 40 }];
+  const csv = design.map(d => {
+    const [x, y] = rotateXY(d.x, d.y, 50, 25, 1.5);
+    return (x + 0.12).toFixed(6) + ',' + (y - 0.08).toFixed(6);
+  }).join('\n');
+  const r = QC.inspect({
+    design, csv, offsetX: -0.1179, offsetY: 0.0831, rotationDeg: -1.5,
+    tolerance: 0.05, maxRadius: 0.1, plateWidth: 100, plateHeight: 50
+  });
+  assert.equal(r.ok, true);
+  // CSV 表头新增 rotation_deg 列
+  assert.match(r.csv, /distance_mm,conclusion,rotation_deg/);
+  // 明细行带角度 -1.5（末列），且同时含原始坐标与校正坐标
+  assert.match(r.csv, /rotation_deg\r\n/);
+  const firstPair = r.pairs[0];
+  const re = new RegExp(firstPair.csvRow + ',' + firstPair.measuredX + ',' + firstPair.measuredY +
+    ',' + firstPair.correctedX + ',' + firstPair.correctedY + ',[0-9.]+,(?:合格|偏移超差),-1.5');
+  assert.match(r.csv, re);
+  // 参数行记录角度与中心
+  assert.match(r.csv, /# params,offset_x_mm,offset_y_mm,rotation_deg,center_x_mm,center_y_mm/);
+  assert.match(r.csv, /,-0\.1179,0\.0831,-1\.5,50,25,/);
+  // SVG 根节点与菱形标记记录角度、中心与原始坐标
+  assert.match(r.svg, /data-rotation-deg="-1.5"/);
+  assert.match(r.svg, /data-center-x-mm="50"/);
+  assert.match(r.svg, /data-measured-x="/);
+});
+
+test('inspect 默认 rotationDeg=0 且结果与旧版纯平移完全一致', () => {
+  const design = [{ x: 5, y: 5 }, { x: 11, y: 7.5 }];
+  const r1 = QC.inspect({ design, csv: '5.2,4.9\n11.1,7.6', tolerance: 0.5, maxRadius: 2 });
+  const r2 = QC.inspect({ design, csv: '5.2,4.9\n11.1,7.6', tolerance: 0.5, maxRadius: 2, rotationDeg: 0 });
+  assert.equal(r1.params.rotationDeg, 0);
+  assert.deepEqual(r1.pairs, r2.pairs);
+  assert.deepEqual(r1.stats, r2.stats);
+});

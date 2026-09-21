@@ -167,6 +167,7 @@
   var qcCsv = document.getElementById('qcCsv');
   var qcOffsetX = document.getElementById('qcOffsetX');
   var qcOffsetY = document.getElementById('qcOffsetY');
+  var qcRotationDeg = document.getElementById('qcRotationDeg');
   var qcTolerance = document.getElementById('qcTolerance');
   var qcMaxRadius = document.getElementById('qcMaxRadius');
   var qcRun = document.getElementById('qcRun');
@@ -177,6 +178,8 @@
   var qcBaseline = document.getElementById('qcBaseline');
   var qcMaxOffsetX = document.getElementById('qcMaxOffsetX');
   var qcMaxOffsetY = document.getElementById('qcMaxOffsetY');
+  var qcMaxRotation = document.getElementById('qcMaxRotation');
+  var qcAngleStep = document.getElementById('qcAngleStep');
   var qcAutoCalibrate = document.getElementById('qcAutoCalibrate');
   var qcCalibMsg = document.getElementById('qcCalibMsg');
   var btnQcCsv = document.getElementById('qcDownloadCsv');
@@ -230,7 +233,9 @@
       '最大偏差 <b>' + (s.maxDeviation == null ? '—' : s.maxDeviation) + '</b> mm；' +
       '平均偏差 <b>' + (s.meanDeviation == null ? '—' : s.meanDeviation) + '</b> mm' +
       '（公差 ' + r.params.tolerance + ' mm，关联半径 ' + r.params.maxRadius +
-      ' mm，偏移 ' + r.params.offsetX + ' / ' + r.params.offsetY + ' mm）';
+      ' mm，偏移 ' + r.params.offsetX + ' / ' + r.params.offsetY +
+      ' mm，旋转 ' + r.params.rotationDeg + '° 绕 (' + r.params.centerX + ',' +
+      r.params.centerY + ') mm）';
     qcStats.hidden = false;
     qcLegend.hidden = false;
   }
@@ -267,6 +272,7 @@
       csv: qcCsv.value,
       offsetX: numVal(qcOffsetX),
       offsetY: numVal(qcOffsetY),
+      rotationDeg: numVal(qcRotationDeg),
       tolerance: numVal(qcTolerance),
       maxRadius: numVal(qcMaxRadius)
     };
@@ -306,17 +312,23 @@
       // 写回估算值（程序化赋值，不会触发 input 事件），再立即重跑四类判定
       qcOffsetX.value = r.offsetX;
       qcOffsetY.value = r.offsetY;
+      if (r.rotationDeg != null) qcRotationDeg.value = r.rotationDeg;
+      var rigid = (r.angleCount > 1 || r.rotationDeg !== 0)
+        ? '估算刚体校准：旋转 = ' + r.rotationDeg + '°（绕板材中心 ' + r.centerX +
+          ',' + r.centerY + ' mm），平移 X = ' + r.offsetX + ' mm，Y = ' + r.offsetY + ' mm'
+        : '估算全局平移：X = ' + r.offsetX + ' mm，Y = ' + r.offsetY +
+          ' mm（角度网格仅 0°，等价于纯平移）';
       showCalibMsg(
         'ok',
-        '估算全局平移：X = ' + r.offsetX + ' mm，Y = ' + r.offsetY +
-        ' mm（候选 ' + r.candidateCount + ' 个，匹配 ' + r.matchedCount +
-        ' 对，总残差 ' + r.totalResidual + ' mm）；偏移已写回并自动重跑质检。'
+        rigid + '（搜索角度 ' + r.angleCount + ' 个，候选 ' + r.candidateCount +
+        ' 个，匹配 ' + r.matchedCount + ' 对，总残差 ' + r.totalResidual +
+        ' mm）；角度与偏移已写回并自动重跑质检。'
       );
       runQc();
     } else {
-      // 无可用候选 / 参数非法：保留偏移输入框原值，仅给出明确提示
+      // 无可用候选 / 参数非法：保留角度与偏移输入框原值，仅给出明确提示
       var msg = (r.errors && r.errors[0] && r.errors[0].message) || '自动校准失败。';
-      showCalibMsg('warn', '未能估算全局平移，偏移输入保持原值：' + msg);
+      showCalibMsg('warn', '未能估算刚体校准，角度与偏移输入保持原值：' + msg);
     }
   }
 
@@ -331,8 +343,15 @@
       csv: qcCsv.value,
       maxOffsetX: numVal(qcMaxOffsetX),
       maxOffsetY: numVal(qcMaxOffsetY),
-      maxRadius: numVal(qcMaxRadius)
+      maxRadius: numVal(qcMaxRadius),
+      plateWidth: lastBaseline.params.plateWidth,
+      plateHeight: lastBaseline.params.plateHeight
     };
+    // 最大旋转角留空 = 纯平移模式（兼容旧调用）；填写后启用小角度刚体联合搜索
+    var maxRot = numVal(qcMaxRotation);
+    if (maxRot != null) payload.maxRotation = maxRot;
+    var step = numVal(qcAngleStep);
+    if (step != null) payload.angleStep = step;
     qcAutoCalibrate.disabled = true;
     fetch('/api/qc/calibrate', {
       method: 'POST',
@@ -360,7 +379,8 @@
 
   // 参数或 CSV 修改后防抖自动重跑（已有质检结果时），手动按钮始终可用；
   // 输入一旦被改动，清掉上一次自动校准的提示
-  [qcCsv, qcOffsetX, qcOffsetY, qcTolerance, qcMaxRadius, qcMaxOffsetX, qcMaxOffsetY].forEach(function (el) {
+  [qcCsv, qcOffsetX, qcOffsetY, qcRotationDeg, qcTolerance, qcMaxRadius,
+    qcMaxOffsetX, qcMaxOffsetY, qcMaxRotation, qcAngleStep].forEach(function (el) {
     el.addEventListener('input', function () {
       if (!qcCalibMsg.hidden) qcCalibMsg.hidden = true;
       if (!lastQc) return;
